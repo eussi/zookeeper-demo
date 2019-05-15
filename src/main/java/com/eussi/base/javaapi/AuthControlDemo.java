@@ -32,14 +32,14 @@ public class AuthControlDemo implements Watcher {
 //        zooKeeper.create("/test", "123".getBytes(), ZooDefs.Ids.CREATOR_ALL_ACL, CreateMode.PERSISTENT);
 
         List<ACL> acls = new ArrayList<ACL>();
-        ACL acl = new ACL(ZooDefs.Perms.CREATE, new Id("digest", "root:root"));
+        ACL acl = new ACL(ZooDefs.Perms.ALL, new Id("digest", "root:root"));
         acls.add(acl);
         zooKeeper.create("/auth-test", "123".getBytes(), acls, CreateMode.PERSISTENT);
 
-        zooKeeper1 = new ZooKeeper(CONNECTIONSTRING, 5000, new ApiOperationDemo());
-        System.out.println("zooKeeper1 state: " + zooKeeper1.getState());
-        Thread.sleep(2000);
-        zooKeeper1.delete("/auth-test", -1);
+//        zooKeeper1 = new ZooKeeper(CONNECTIONSTRING, 5000, new ApiOperationDemo());
+//        System.out.println("zooKeeper1 state: " + zooKeeper1.getState());
+//        Thread.sleep(2000);
+//        zooKeeper1.delete("/auth-test", -1);
 
 
     }
