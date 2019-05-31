@@ -109,7 +109,7 @@ public class RecoveredAssignments {
                 break;
             default:
                 LOG.error("getChildren failed",  KeeperException.create(Code.get(rc), path));
-                cb.recoveryComplete(RecoveryCallback.FAILED, null);
+                cb.recoveryComplete(RecoveryCallback.FAILED, null);//调用回调
             }
         }
     };

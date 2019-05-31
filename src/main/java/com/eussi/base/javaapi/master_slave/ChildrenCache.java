@@ -40,7 +40,12 @@ public class ChildrenCache {
     List<String> getList() {
         return children;
     }
-        
+
+    /**
+     * 将缓存换成新数组，并返回原数组不包含新数组的数据
+     * @param newChildren
+     * @return
+     */
     List<String> addedAndSet( List<String> newChildren) {
         ArrayList<String> diff = null;
         
@@ -61,7 +66,12 @@ public class ChildrenCache {
             
         return diff;
     }
-        
+
+    /**
+     * 将缓存换成新数组，并返回新数组不包含原数组的数据
+     * @param newChildren
+     * @return
+     */
     List<String> removedAndSet( List<String> newChildren) {
         List<String> diff = null;
             
