@@ -54,20 +54,19 @@ public class Master implements Watcher, Closeable {
      */
     public static void main(String args[]) throws Exception {
         Master m = new Master("192.168.198.202:2181");
-        m.startZK();
 
-        while(!m.isConnected()){
+        m.startZK();//实例化zookeeper
+
+        while(!m.isConnected()){//实例化zookeeper过程中会建立连接，这里一直等到连接建立成功，结束循环
             Thread.sleep(100);
         }
-        /*
-         * bootstrap() creates some necessary znodes.
-         */
-        m.bootstrap();
+
+        m.bootstrap();//创建一些主要节点
 
         /*
          * now runs for master.
          */
-        m.runForMaster();
+        m.runForMaster();//创建master节点
 
         while(!m.isExpired()){
             Thread.sleep(1000);
@@ -96,6 +95,13 @@ public class Master implements Watcher, Closeable {
      * @param hostPort
      */
     Master(String hostPort) {
+        /*
+            在构造函数中，我们并未实例化ZooKeeper对象，而是先保存
+            hostPort留着后面使用。Java最佳实践告诉我们，一个对象的构造函数没
+            有完成前不要调用这个对象的其他方法。
+            因为这个对象实现了Watcher，并且当我们实例化ZooKeeper对象时，其Watcher的回调函数就
+            会被调用，所以我们需要Master的构造函数返回后再调用ZooKeeper的构造函数。
+         */
         this.hostPort = hostPort;
     }
     
@@ -106,7 +112,7 @@ public class Master implements Watcher, Closeable {
      * @throws java.io.IOException
      */
     void startZK() throws IOException {
-        zk = new ZooKeeper(hostPort, 15000, this);
+        zk = new ZooKeeper(hostPort, 15000, this);//传入watcher对象
     }
 
     /**
@@ -127,20 +133,29 @@ public class Master implements Watcher, Closeable {
      */
     public void process(WatchedEvent e) {
         LOG.info("Processing event: " + e.toString());
+        /*
+        WatchedEvent数据结构包括以下信息：
+            ·ZooKeeper会话状态（KeeperState）：Disconnected、
+                SyncConnected、AuthFailed、ConnectedReadOnly、SaslAuthenticated和
+                Expired。
+            ·事件类型（EventType）：NodeCreated、NodeDeleted、
+                NodeDataChanged、NodeChildrenChanged和None。
+            ·如果事件类型不是None时，返回一个znode路径。
+         */
         if(e.getType() == EventType.None){
             switch (e.getState()) {
-            case SyncConnected:
-                connected = true;
-                break;
-            case Disconnected:
-                connected = false;
-                break;
-            case Expired:
-                expired = true;
-                connected = false;
-                LOG.error("Session expiration");
-            default:
-                break;
+                case SyncConnected:
+                    connected = true;
+                    break;
+                case Disconnected:
+                    connected = false;
+                    break;
+                case Expired:
+                    expired = true;
+                    connected = false;
+                    LOG.error("Session expiration");
+                default:
+                    break;
             }
         }
     }
@@ -161,35 +176,38 @@ public class Master implements Watcher, Closeable {
     void createParent(String path, byte[] data){
         zk.create(path,
                 data,
-                Ids.OPEN_ACL_UNSAFE,
-                CreateMode.PERSISTENT,
-                createParentCallback,
-                data);
+                Ids.OPEN_ACL_UNSAFE,//为所有人提供了所有权限（正如其名所显示的，这个ACL策略在不可信的环境下使用是非常不安全的）
+                CreateMode.PERSISTENT,//持久节点
+                createParentCallback,//异步回调
+                data);//callback中的ctx，上下文参数
     }
 
     StringCallback createParentCallback = new StringCallback() {
-        public void processResult(int rc, String path, Object ctx, String name) {
+        public void processResult(int rc, //返回调用的结构，返回OK或与KeeperException异常对应的编码值。
+                                  String path, //传给create的path参数值
+                                  Object ctx, //传给create的上下文参数
+                                  String name) {//创建的znode节点名称
             switch (Code.get(rc)) {
-            case CONNECTIONLOSS:
-                /*
-                 * Try again. Note that registering again is not a problem.
-                 * If the znode has already been created, then we get a
-                 * NODEEXISTS event back.
-                 */
-                createParent(path, (byte[]) ctx);
+                case CONNECTIONLOSS:
+                    /*
+                     * Try again. Note that registering again is not a problem.
+                     * If the znode has already been created, then we get a
+                     * NODEEXISTS event back.
+                     */
+                    createParent(path, (byte[]) ctx);
 
-                break;
-            case OK:
-                LOG.info("Parent created");
+                    break;
+                case OK:
+                    LOG.info("Parent created");
 
-                break;
-            case NODEEXISTS:
-                LOG.warn("Parent already registered: " + path);
+                    break;
+                case NODEEXISTS:
+                    LOG.warn("Parent already registered: " + path);
 
-                break;
-            default:
-                LOG.error("Something went wrong: ",
-                        KeeperException.create(Code.get(rc), path));
+                    break;
+                default:
+                    LOG.error("Something went wrong: ",
+                            KeeperException.create(Code.get(rc), path));
             }
         }
     };
@@ -212,55 +230,6 @@ public class Master implements Watcher, Closeable {
         return expired;
     }
 
-    /*
-     **************************************
-     **************************************
-     * Methods related to master election.*
-     **************************************
-     **************************************
-     */
-
-
-    /*
-     * The story in this callback implementation is the following.
-     * We tried to create the master lock znode. If it suceeds, then
-     * great, it takes leadership. However, there are a couple of
-     * exceptional situations we need to take care of.
-     *
-     * First, we could get a connection loss event before getting
-     * an answer so we are left wondering if the operation went through.
-     * To check, we try to read the /master znode. If it is there, then
-     * we check if this master is the primary. If not, we run for master
-     * again.
-     *
-     *  The second case is if we find that the node is already there.
-     *  In this case, we call exists to set a watch on the znode.
-     */
-    StringCallback masterCreateCallback = new StringCallback() {
-        public void processResult(int rc, String path, Object ctx, String name) {
-            switch (Code.get(rc)) {
-            case CONNECTIONLOSS:
-                checkMaster();
-
-                break;
-            case OK:
-                state = MasterStates.ELECTED;
-                takeLeadership();
-
-                break;
-            case NODEEXISTS:
-                state = MasterStates.NOTELECTED;
-                masterExists();
-
-                break;
-            default:
-                state = MasterStates.NOTELECTED;
-                LOG.error("Something went wrong when running for master.",
-                        KeeperException.create(Code.get(rc), path));
-            }
-            LOG.info("I'm " + (state == MasterStates.ELECTED ? "" : "not ") + "the leader " + serverId);
-        }
-    };
 
     void masterExists() {
         zk.exists("/master",
@@ -335,42 +304,92 @@ public class Master implements Watcher, Closeable {
         zk.create("/master",
                 serverId.getBytes(),
                 Ids.OPEN_ACL_UNSAFE,
-                CreateMode.EPHEMERAL,
+                CreateMode.EPHEMERAL,//创建临时节点
                 masterCreateCallback,
                 null);
+    }
+
+    /*
+     **************************************
+     **************************************
+     * Methods related to master election.*
+     **************************************
+     **************************************
+     */
+
+
+    /*
+     * The story in this callback implementation is the following.
+     * We tried to create the master lock znode. If it suceeds, then
+     * great, it takes leadership. However, there are a couple of
+     * exceptional situations we need to take care of.
+     *
+     * First, we could get a connection loss event before getting
+     * an answer so we are left wondering if the operation went through.
+     * To check, we try to read the /master znode. If it is there, then
+     * we check if this master is the primary. If not, we run for master
+     * again.
+     *
+     *  The second case is if we find that the node is already there.
+     *  In this case, we call exists to set a watch on the znode.
+     */
+    StringCallback masterCreateCallback = new StringCallback() {
+        public void processResult(int rc, String path, Object ctx, String name) {
+            switch (Code.get(rc)) {
+                case CONNECTIONLOSS://连接丢失，需要检测是否主节点已经创建
+                    checkMaster();
+                    break;
+                case OK://创建成功，则证明选举成功
+                    state = MasterStates.ELECTED;
+                    takeLeadership();
+
+                    break;
+                case NODEEXISTS://已经存在，则证明已经选举了主节点
+                    state = MasterStates.NOTELECTED;
+                    masterExists();
+
+                    break;
+                default:
+                    state = MasterStates.NOTELECTED;
+                    LOG.error("Something went wrong when running for master.",
+                            KeeperException.create(Code.get(rc), path));
+            }
+            LOG.info("I'm " + (state == MasterStates.ELECTED ? "" : "not ") + "the leader " + serverId);
+        }
+    };
+
+
+    void checkMaster() {
+        zk.getData("/master", false, masterCheckCallback, null);
     }
 
     DataCallback masterCheckCallback = new DataCallback() {
         public void processResult(int rc, String path, Object ctx, byte[] data, Stat stat) {
             switch (Code.get(rc)) {
-            case CONNECTIONLOSS:
-                checkMaster();
+                case CONNECTIONLOSS:
+                    checkMaster();
 
-                break;
-            case NONODE:
-                runForMaster();
+                    break;
+                case NONODE:
+                    runForMaster();
 
-                break;
-            case OK:
-                if( serverId.equals( new String(data) ) ) {
-                    state = MasterStates.ELECTED;
-                    takeLeadership();
-                } else {
-                    state = MasterStates.NOTELECTED;
-                    masterExists();
-                }
+                    break;
+                case OK:
+                    if( serverId.equals( new String(data) ) ) {
+                        state = MasterStates.ELECTED;
+                        takeLeadership();
+                    } else {
+                        state = MasterStates.NOTELECTED;
+                        masterExists();
+                    }
 
-                break;
-            default:
-                LOG.error("Error when reading data.",
-                        KeeperException.create(Code.get(rc), path));
+                    break;
+                default:
+                    LOG.error("Error when reading data.",
+                            KeeperException.create(Code.get(rc), path));
             }
         }
     };
-
-    void checkMaster() {
-        zk.getData("/master", false, masterCheckCallback, null);
-    }
 
     /*
      ****************************************************
